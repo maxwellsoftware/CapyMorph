@@ -1,6 +1,6 @@
 ## Interface: 11200
 ## Title: CapyMorph
-## Version: 1.0.2
+## Version: 1.0.3
 ## Notes: Locally morphs your own character (VanillaHelpers) — in-game UI + /cm
 ## SavedVariablesPerCharacter: CapyMorphDB
 CapyMorphData.lua

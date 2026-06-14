@@ -52,7 +52,8 @@ close:SetPoint("TOPRIGHT", -8, -8)
 
 -- tabs (centered on the window, order: Armory / Character / Druid / Presets)
 local tabBtns = {}
-local TABDEF = {{"Armory","armory"},{"My Character","character"},{"Druid Forms","druid"},{"Mounts","mounts"},{"Presets","presets"}}
+-- "Mounts" tab is hidden until the mount-morph mechanism is finished (WIP).
+local TABDEF = {{"Armory","armory"},{"My Character","character"},{"Druid Forms","druid"},{"Presets","presets"}}
 local TW, TGAP = 120, 8
 local ntab = table.getn(TABDEF)
 local totalw = ntab*TW + (ntab-1)*TGAP

@@ -63,7 +63,7 @@ INVTYPE_TO_SLOT = {k: v[0] for k, v in INVTYPE_TO_SLOTS.items()}
 
 _TOC = """## Interface: 11200
 ## Title: CapyMorph
-## Version: 1.0.2
+## Version: 1.0.3
 ## Notes: Locally morphs your own character (VanillaHelpers) — in-game UI + /cm
 ## SavedVariablesPerCharacter: CapyMorphDB
 CapyMorphData.lua
