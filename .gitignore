@@ -1,0 +1,24 @@
+# Built / regenerable artifacts
+app/
+build/
+dist/
+*.spec
+release/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Generator caches (rebuilt from the client). Keep only the item-name source.
+data/*
+!data/item_names.json
+backups/
+output/
+reports/
+*.mpq
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+*.swp

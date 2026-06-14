@@ -1,0 +1,434 @@
+-- CapyMorph — core logic + API for the in-game UI.
+-- Per-character, client-side only (VanillaHelpers): SetUnitDisplayID /
+-- SetUnitVisibleItemID. DEF_MODEL / DEF_ITEMS / FORMS are set by the header the
+-- desktop tool prepends to this file (FORMS = per-form display-id lists).
+
+TMC = {}
+
+local function msg(t) DEFAULT_CHAT_FRAME:AddMessage("|cff66ccffCapyMorph:|r "..tostring(t)) end
+TMC.msg = msg
+
+local function copy(t) local r={} if t then local k,v for k,v in pairs(t) do r[k]=v end end return r end
+
+local function ensureDB()
+  if not CapyMorphDB then
+    CapyMorphDB = { on=true, model=DEF_MODEL, items={}, forms={}, presets={} }
+    local i
+    for i=1, table.getn(DEF_ITEMS) do CapyMorphDB.items[DEF_ITEMS[i][1]] = DEF_ITEMS[i][2] end
+  end
+  local db = CapyMorphDB
+  if not db.items then db.items={} end
+  if not db.forms then db.forms={} end
+  if not db.presets then db.presets={} end
+  if not db.hidden then db.hidden={} end
+  -- migrate old hidden sentinel (items[slot]==0) -> separate db.hidden, keeping transmog
+  local mh
+  local s,v for s,v in pairs(db.items) do if v == 0 then mh = mh or {}; mh[s] = true end end
+  if mh then local h for h in pairs(mh) do db.items[h] = nil; db.hidden[h] = true end end
+  -- migrate away from the old display-ID-keyed form maps
+  db.formmap = nil; db.unform = nil; db.formpaths = nil
+  return db
+end
+TMC.db = ensureDB
+
+-- Form detection (GetShapeshiftForm() is nil on this client):
+--   * detectActive() — shapeshift bar isActive flag; authoritative, unaffected
+--     by our display override (so model-mode morphs don't loop), but ~0.5s lag.
+--   * detectFast()   — power type (energy=cat, rage=bear); instant, but only
+--     valid while we are NOT overriding the display. Used to enter fast.
+-- The result is latched in db.formActive for the per-tick apply() to use.
+local function classifyForm(icon, name)
+  local s = string.lower((icon or "").." "..(name or ""))
+  if string.find(s, "bear", 1, true) then return "bear"
+  elseif string.find(s, "cat", 1, true) then return "cat"
+  elseif string.find(s, "moonkin", 1, true) or string.find(s, "forceofnature", 1, true) then return "moonkin" end
+  return nil
+end
+local function formByDisplay(d)
+  if not d or not FORMS then return nil end
+  local nm, list
+  for nm, list in pairs(FORMS) do
+    local i for i=1, table.getn(list) do if list[i] == d then return nm end end
+  end
+  return nil
+end
+-- Apply ONLY the body/form display, using the LATCHED db.formActive (set by
+-- redetect at shapeshift time). Safe to run every frame: it only calls
+-- SetUnitDisplayID when the current display differs from what we want, so it
+-- re-asserts instantly if the game overwrites it, without reload-flicker.
+local ovDisp = nil   -- display id we currently force (nil = none)
+local lastVis = {}   -- slot -> itemID we last forced, so we don't re-set (re-render) each tick
+local DUST_T = 0.15  -- on entering a form, let its transform effect (dust) play this long before morphing
+local morphHold = 0  -- countdown while we let the dust play
+local prevForm = nil
+local function playerReady()
+  return (not UnitExists) or UnitExists("player")   -- avoid "Unit not found" on the loading screen
+end
+-- remember the humanoid display, but NEVER latch a form's own display as base
+local function rememberBase(db)
+  if UnitDisplayInfo then
+    local d = UnitDisplayInfo("player")
+    if d and not formByDisplay(d) then db.baseDisplay = d end
+  end
+end
+local function applyDisplay()
+  local db = ensureDB()
+  if not db.on or not SetUnitDisplayID or not playerReady() then return end
+  local pv = TMC._pv
+  local bodyDisplay = (pv and pv.body) or db.model
+  local hasForms = db.forms and next(db.forms) ~= nil
+  if not (bodyDisplay or hasForms) then return end   -- nothing configured: skip all display reads
+  local form = db.formActive
+  if form == nil and ovDisp == nil and not bodyDisplay then rememberBase(db) end
+  local ov = form and db.forms and db.forms[form]
+  local mode = ov and ov.mode
+
+  if mode == "self" then
+    -- show the character by CLEARING to the base race model. We never set a
+    -- creature display id here, because on this client that also changes the
+    -- power bar / unit type. Re-assert only if the game re-applied the form.
+    if not (db.baseDisplay and UnitDisplayInfo and UnitDisplayInfo("player") == db.baseDisplay) then
+      SetUnitDisplayID("player")
+      rememberBase(db)          -- after clearing, the display IS the base race -> learn it
+    end
+    ovDisp = nil
+    return
+  end
+
+  local want
+  if mode == "model" and ov.display then
+    if morphHold > 0 then return end   -- let the shapeshift transform effect (dust) play on the real form first
+    want = ov.display
+  elseif bodyDisplay then want = bodyDisplay
+  else want = nil end
+  if want then
+    if not (UnitDisplayInfo and UnitDisplayInfo("player") == want) then SetUnitDisplayID("player", want) end
+    ovDisp = want
+  elseif ovDisp ~= nil then
+    SetUnitDisplayID("player"); ovDisp = nil    -- clear our override once
+  end
+end
+TMC.applyDisplay = applyDisplay
+
+local isDruid = false
+local function druid()   -- only ever caches TRUE, so an early (pre-load) call can't disable forms
+  if not isDruid and UnitClass then local _, c = UnitClass("player"); if c == "DRUID" then isDruid = true end end
+  return isDruid
+end
+
+-- AUTHORITATIVE form, via the shapeshift bar's isActive flag. This is NOT
+-- affected by our own display override, so model-mode morphs don't create a
+-- feedback loop. Not gated on druid(): non-druids have no shapeshift forms (or
+-- stances whose icons don't match cat/bear/moonkin), so this returns nil anyway.
+local function detectActive()
+  local n = GetNumShapeshiftForms and GetNumShapeshiftForms()
+  if n and n > 0 and GetShapeshiftFormInfo then
+    local i for i=1, n do local ic, nm, ac = GetShapeshiftFormInfo(i); if ac then return classifyForm(ic, nm) end end
+  end
+  return nil
+end
+
+-- FAST form hint via power type (energy=cat, rage=bear). Only trustworthy when
+-- we are NOT overriding the display (ovDisp==nil), because a creature override
+-- changes the power type. Used to enter a form instantly before isActive rises.
+local function detectFast()
+  if not druid() then return nil end
+  local pt = UnitPowerType and UnitPowerType("player")
+  if pt == 3 then return "cat" end
+  if pt == 1 then return "bear" end
+  return nil   -- moonkin/caster share mana -> wait for isActive
+end
+
+-- latch state: confirmed = isActive has verified the current form; holdT keeps a
+-- fast-detected (unconfirmed) form alive briefly until isActive catches up.
+local confirmed = false
+local holdT = 0
+local function refreshForm(dt)
+  local db = ensureDB()
+  if not playerReady() then return end
+  if db.baseDisplay and formByDisplay(db.baseDisplay) then db.baseDisplay = nil end  -- heal a bad saved base
+  if morphHold > 0 then morphHold = morphHold - (dt or 0) end
+  local byActive = detectActive()
+  if byActive then
+    db.formActive = byActive; confirmed = true; holdT = 0
+  elseif ovDisp == nil then
+    local fast = detectFast()                         -- power type is clean while not overriding
+    if fast then db.formActive = fast; confirmed = false; holdT = 1.5
+    else db.formActive = nil; confirmed = false; holdT = 0 end
+  elseif confirmed then
+    db.formActive = nil; confirmed = false            -- isActive had confirmed, now dropped -> left the form
+  elseif holdT > 0 then
+    holdT = holdT - (dt or 0)                          -- entering: hold the fast guess until isActive rises
+  else
+    db.formActive = nil                               -- fast guess never confirmed -> give up
+  end
+  -- on entering a NEW form with a creature morph, briefly delay so its transform effect plays
+  if db.formActive ~= prevForm then
+    prevForm = db.formActive
+    local ov = db.formActive and db.forms and db.forms[db.formActive]
+    morphHold = (ov and ov.mode == "model") and DUST_T or 0
+  end
+  applyDisplay()
+end
+TMC.redetect = refreshForm
+function TMC.activeForm() return ensureDB().formActive end
+
+-- one-line dump of what we use to detect the form
+function TMC.formDebug()
+  return "power="..tostring(UnitPowerType and UnitPowerType("player")).." (0=mana 1=rage 3=energy)"..
+         " druid="..tostring(druid()).." isActive="..tostring(detectActive())..
+         " active="..tostring(ensureDB().formActive).." conf="..tostring(confirmed)
+end
+
+-- TMC._pv = transient live-preview overlay (NOT saved): {slot,item} | {body} | {items=map}
+-- Full apply: display (via applyDisplay) + visible items. Items run on a slower
+-- cadence; the display part also runs every frame on its own for instant forms.
+local function apply()
+  local db = ensureDB()
+  if not playerReady() then return end
+  applyDisplay()
+  if not db.on or not SetUnitVisibleItemID then return end
+  local pv = TMC._pv
+
+  -- desired visible item per slot: transmog (db.items) with HIDE (db.hidden -> 0)
+  -- layered on top; the live preview (pv) wins and un-hides what you hover.
+  local desired = {}
+  if pv and pv.items then
+    local s, i for s, i in pairs(pv.items) do desired[s] = i end
+  else
+    local s, i for s, i in pairs(db.items) do desired[s] = i end          -- transmog (kept under a hide)
+    if db.hidden then local h for h in pairs(db.hidden) do desired[h] = 0 end end  -- hidden = force empty
+    if pv and pv.slot then desired[pv.slot] = pv.item end                 -- hovered item overrides (shows it)
+  end
+  -- only (re)set a slot when it actually changed since last tick, else the item
+  -- re-renders every tick (brightness flicker). Apply changes, then clear leftovers.
+  local s, i
+  for s, i in pairs(desired) do
+    if lastVis[s] ~= i then SetUnitVisibleItemID("player", s, i); lastVis[s] = i end
+  end
+  for s in pairs(lastVis) do
+    if desired[s] == nil then SetUnitVisibleItemID("player", s); lastVis[s] = nil end
+  end
+  -- head/cloak: a morph needs helm/cloak display ON; "hidden" (0) needs it OFF.
+  -- Guard with Showing* so we don't toggle (re-render) every tick.
+  if desired[1] == 0 then if ShowHelm and ShowingHelm and ShowingHelm() then ShowHelm(0) end
+  elseif desired[1] then if ShowHelm and ShowingHelm and not ShowingHelm() then ShowHelm(1) end end
+  if desired[15] == 0 then if ShowCloak and ShowingCloak and ShowingCloak() then ShowCloak(0) end
+  elseif desired[15] then if ShowCloak and ShowingCloak and not ShowingCloak() then ShowCloak(1) end end
+end
+TMC.apply = apply
+
+-- hide a slot entirely (toggle). Kept SEPARATE from the transmog (db.items), so
+-- hiding remembers the transmog underneath and Show restores it.
+function TMC.toggleHide(slot)
+  local db = ensureDB()
+  if not db.hidden then db.hidden = {} end
+  if db.hidden[slot] then
+    db.hidden[slot] = nil                              -- show: the transmog (or real item) returns
+    if slot == 1 and ShowHelm then ShowHelm(1) end
+    if slot == 15 and ShowCloak then ShowCloak(1) end
+  else
+    db.hidden[slot] = true                             -- hide; transmog stays remembered in db.items
+  end
+  apply()
+end
+function TMC.isHidden(slot) local db=ensureDB(); return db.hidden and db.hidden[slot] == true end
+
+-- live preview (local only, reversible). slot/item OR body OR items-map.
+function TMC.preview(slot, item, body) TMC._pv = { slot = slot, item = item, body = body }; apply() end
+function TMC.previewSet(body, items) TMC._pv = { body = body, items = items }; apply() end
+function TMC.previewClear()
+  local pv = TMC._pv; TMC._pv = nil
+  local db = ensureDB()
+  if SetUnitVisibleItemID then
+    if pv and pv.items then
+      local s for s in pairs(pv.items) do if not db.items[s] then SetUnitVisibleItemID("player", s) end end
+    elseif pv and pv.slot and not db.items[pv.slot] then SetUnitVisibleItemID("player", pv.slot) end
+  end
+  if pv and pv.body and SetUnitDisplayID and not db.model then SetUnitDisplayID("player") end
+  apply()
+end
+
+local function visualReset()
+  local db = ensureDB()
+  if SetUnitVisibleItemID then
+    local s for s in pairs(db.items) do SetUnitVisibleItemID("player", s) end
+    if db.hidden then local h for h in pairs(db.hidden) do SetUnitVisibleItemID("player", h) end end
+  end
+  if db.hidden then  -- restore helm/cloak if we had hidden them
+    if db.hidden[1] and ShowHelm then ShowHelm(1) end
+    if db.hidden[15] and ShowCloak then ShowCloak(1) end
+  end
+  if SetUnitDisplayID then SetUnitDisplayID("player") end
+  lastVis = {}; ovDisp = nil
+end
+
+function TMC.setItem(slot, itemID, name)
+  local db = ensureDB()
+  if not db.labels then db.labels = {} end
+  if not db.labels.items then db.labels.items = {} end
+  if itemID then db.items[slot] = itemID; db.labels.items[slot] = name
+  else db.items[slot] = nil; db.labels.items[slot] = nil; if SetUnitVisibleItemID then SetUnitVisibleItemID("player", slot) end end
+  apply()
+end
+
+function TMC.itemLabel(slot)
+  local db = ensureDB()
+  if db.labels and db.labels.items then return db.labels.items[slot] end
+end
+
+function TMC.setBody(displayID, name, path)
+  local db = ensureDB(); db.model = displayID; db.modelPath = path
+  if not db.labels then db.labels = {} end
+  db.labels.model = name
+  apply()
+end
+function TMC.modelPath() return ensureDB().modelPath end
+function TMC.bodyLabel() local db=ensureDB(); return db.labels and db.labels.model end
+
+-- remove ONLY the whole-body (My Character) morph; items and forms untouched
+function TMC.clearBody()
+  TMC._pv = nil
+  local db = ensureDB()
+  db.model = nil; db.modelPath = nil
+  if db.labels then db.labels.model = nil end
+  if SetUnitDisplayID then SetUnitDisplayID("player") end
+  apply()
+end
+
+function TMC.setForm(name, target, label, path)  -- target: number(display) | "self" | "off"/nil
+  local db = ensureDB()
+  if not db.forms then db.forms = {} end
+  if target == "off" or target == nil then db.forms[name] = nil
+  elseif target == "self" then db.forms[name] = { mode = "self", label = "my character" }
+  else db.forms[name] = { mode = "model", display = target, path = path, label = label } end
+  apply()
+end
+function TMC.formMode(nm) local db=ensureDB(); return db.forms and db.forms[nm] and db.forms[nm].mode end
+function TMC.formDisplay(nm) local db=ensureDB(); return db.forms and db.forms[nm] and db.forms[nm].display end
+function TMC.formPath(nm) local db=ensureDB(); return db.forms and db.forms[nm] and db.forms[nm].path end
+function TMC.formLabel(nm) local db=ensureDB(); return db.forms and db.forms[nm] and db.forms[nm].label end
+
+function TMC.clear()
+  TMC._pv = nil
+  visualReset()
+  local db = ensureDB()
+  db.model=nil; db.modelPath=nil; db.items={}; db.forms={}; db.hidden={}
+  db.labels = { items = {}, forms = {} }
+end
+
+function TMC.setOn(v) local db=ensureDB(); db.on=v; if v then apply() else visualReset() end end
+
+-- presets: full snapshot of model/items/formmap/unform
+local function copylabels(l)
+  if not l then return {} end
+  local r = { model=l.model, items=copy(l.items), forms=copy(l.forms) }
+  return r
+end
+function TMC.savePreset(name)
+  if not name or name=="" then return end
+  local db = ensureDB()
+  db.presets[name] = { model=db.model, modelPath=db.modelPath, items=copy(db.items),
+    forms=copy(db.forms), hidden=copy(db.hidden), labels=copylabels(db.labels) }
+  msg("preset '"..name.."' saved")
+end
+function TMC.loadPreset(name)
+  local db = ensureDB(); local p = db.presets[name]
+  if not p then msg("no preset '"..tostring(name).."'"); return end
+  visualReset()
+  db.model=p.model; db.modelPath=p.modelPath; db.items=copy(p.items)
+  db.forms=copy(p.forms or {})
+  db.hidden=copy(p.hidden or {})
+  db.labels=copylabels(p.labels)
+  apply(); msg("preset '"..name.."' loaded")
+end
+function TMC.getPreset(name) return ensureDB().presets[name] end
+function TMC.deletePreset(name) local db=ensureDB(); db.presets[name]=nil end
+function TMC.presetNames()
+  local db = ensureDB(); local t = {}; local k
+  for k in pairs(db.presets) do table.insert(t, k) end; table.sort(t); return t
+end
+
+local function diag()
+  msg("SetUnitDisplayID="..type(SetUnitDisplayID)..", UnitDisplayInfo="..type(UnitDisplayInfo)..", GetShapeshiftForm="..type(GetShapeshiftForm)..", GetShapeshiftFormInfo="..type(GetShapeshiftFormInfo))
+  if type(UnitDisplayInfo)=="function" then msg("current display = "..tostring(UnitDisplayInfo("player"))) end
+  local db = ensureDB()
+  local idx = GetShapeshiftForm and GetShapeshiftForm()
+  local n = GetNumShapeshiftForms and GetNumShapeshiftForms() or 0
+  msg("active index="..tostring(idx).."  numForms="..tostring(n).."  detected="..tostring(db.formActive).."  base="..tostring(db.baseDisplay))
+  local i
+  for i=1, n do
+    if GetShapeshiftFormInfo then
+      local icon, name, isActive = GetShapeshiftFormInfo(i)
+      msg("  form "..i..": icon="..tostring(icon).." name="..tostring(name).." active="..tostring(isActive).." => "..tostring(classifyForm(icon, name)))
+    end
+  end
+  local k,v
+  for k,v in pairs(db.forms or {}) do msg("  override ["..k.."] mode="..tostring(v.mode).." display="..tostring(v.display)) end
+end
+TMC.diag = diag
+
+-- events
+local announced = false
+local burst = nil          -- short per-frame window after a shapeshift (forward-declared)
+local f = CreateFrame("Frame")
+f:RegisterEvent("PLAYER_ENTERING_WORLD")
+f:RegisterEvent("PLAYER_ALIVE")
+f:RegisterEvent("PLAYER_UNGHOST")
+f:RegisterEvent("UPDATE_SHAPESHIFT_FORM")
+f:SetScript("OnEvent", function()
+  if not announced then
+    announced = true
+    if type(SetUnitDisplayID) ~= "function" then
+      msg("|cffff5555VanillaHelpers functions NOT found|r — /cm diag for details.")
+    else
+      msg("ready. /cm opens the window.")
+    end
+  end
+  if event == "PLAYER_ENTERING_WORLD" then lastVis = {}; ovDisp = nil end  -- overrides reset on zone -> force one re-apply
+  refreshForm(0)
+  apply()                    -- re-assert visible items after the event
+  burst = 0.5                -- briefly poll per-frame so isActive confirms quickly after a shift
+end)
+local fAcc, iAcc = 0, 0
+f:SetScript("OnUpdate", function()
+  if burst then
+    burst = burst - arg1
+    refreshForm(arg1)                               -- per-frame only briefly after a shapeshift
+    if burst <= 0 then burst = nil end
+  end
+  fAcc = fAcc + arg1
+  if fAcc > 0.1 then refreshForm(fAcc); fAcc = 0 end   -- form upkeep ~10x/sec (not per-frame)
+  iAcc = iAcc + arg1
+  if iAcc > 0.5 then iAcc = 0; apply() end          -- visible items, slower
+end)
+
+local function words(s)
+  local t = {}
+  for w in string.gfind(s or "", "%S+") do table.insert(t, w) end
+  return t
+end
+
+SLASH_CAPYMORPH1 = "/cm"
+SLASH_CAPYMORPH2 = "/capymorph"
+SlashCmdList["CAPYMORPH"] = function(m)
+  ensureDB()
+  local a = words(string.lower(m or ""))
+  local cmd = a[1]
+  if cmd == nil then
+    if CapyMorphUI_Toggle then CapyMorphUI_Toggle() else apply() end
+  elseif cmd == "body" then TMC.setBody(tonumber(a[2]))
+  elseif cmd == "item" then TMC.setItem(tonumber(a[2]), tonumber(a[3]))
+  elseif cmd == "form" then TMC.setForm(a[2], (a[3]=="self" or a[3]=="off") and a[3] or tonumber(a[3]))
+  elseif cmd == "preset" then TMC.loadPreset(a[2])
+  elseif cmd == "save" then TMC.savePreset(a[2])
+  elseif cmd == "clear" then TMC.clear(); msg("cleared")
+  elseif cmd == "off" then TMC.setOn(false); msg("off")
+  elseif cmd == "on" then TMC.setOn(true); msg("on")
+  elseif cmd == "diag" then diag()
+  elseif cmd == "test" then
+    local id = tonumber(a[2]) or 7550
+    if type(SetUnitDisplayID)=="function" then SetUnitDisplayID("player", id); msg("called SetUnitDisplayID(player,"..id..") — did your model change? (if you are shapeshifted, did the FORM change?)")
+    else msg("|cffff5555SetUnitDisplayID is not available in this client|r") end
+  else msg("/cm (window) | diag | test | body <id> | item <slot> <id> | form <bear|cat|moonkin> <id|self|off> | preset <name> | save <name> | clear | off | on") end
+end

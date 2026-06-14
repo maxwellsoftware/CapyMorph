@@ -1,0 +1,11 @@
+# dlls.txt — list of DLLs the loader (VanillaFixes / your launcher) injects at start.
+# Put this file next to WoW.exe (in the Game folder). Keep your existing lines and
+# make sure VanillaHelpers.dll is present. If a dlls.txt.cache file exists, delete it
+# so the new entry is picked up.
+
+# (your other dlls, if any:)
+# nampower.dll
+# SuperWoWhook.dll
+# UnitXP_SP3.dll
+
+VanillaHelpers.dll
