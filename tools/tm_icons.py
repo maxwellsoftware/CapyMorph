@@ -19,7 +19,7 @@ import pympq
 from PIL import Image
 
 import tm_config as cfg
-from stage1_scan_client import load_order_key
+from tm_archive import load_order_key
 
 ICON_DIR = "Interface\\Icons"
 

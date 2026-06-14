@@ -87,7 +87,7 @@ def _model_name(path: str) -> str:
 
 
 def _load(label, internal):
-    from stage2_dbc_explorer import find_effective_archive
+    from tm_archive import find_effective_archive
     arc = find_effective_archive(internal)
     return tm_dbc.load_dbc_from_mpq(arc, internal, label)
 
@@ -95,7 +95,7 @@ def _load(label, internal):
 def client_signature() -> dict:
     """Fingerprint of the client's effective CreatureDisplayInfo (archive+size),
     so an identical client reuses the prebuilt DB and a changed one rebuilds."""
-    from stage2_dbc_explorer import find_effective_archive
+    from tm_archive import find_effective_archive
     try:
         arc = find_effective_archive(CDI_INTERNAL)
         return {"archive": os.path.basename(arc), "archive_size": os.path.getsize(arc)}

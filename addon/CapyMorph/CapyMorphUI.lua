@@ -13,11 +13,11 @@ local SLOTS = {
   {5,"Chest","Interface\\PaperDoll\\UI-PaperDoll-Slot-Chest","L",4},
   {4,"Shirt","Interface\\PaperDoll\\UI-PaperDoll-Slot-Shirt","L",5},
   {19,"Tabard","Interface\\PaperDoll\\UI-PaperDoll-Slot-Tabard","L",6},
+  {9,"Wrist","Interface\\PaperDoll\\UI-PaperDoll-Slot-Wrists","L",7},
   {10,"Hands","Interface\\PaperDoll\\UI-PaperDoll-Slot-Hands","R",1},
   {6,"Waist","Interface\\PaperDoll\\UI-PaperDoll-Slot-Waist","R",2},
   {7,"Legs","Interface\\PaperDoll\\UI-PaperDoll-Slot-Legs","R",3},
   {8,"Feet","Interface\\PaperDoll\\UI-PaperDoll-Slot-Feet","R",4},
-  {9,"Wrist","Interface\\PaperDoll\\UI-PaperDoll-Slot-Wrists","R",5},
   {16,"Main Hand","Interface\\PaperDoll\\UI-PaperDoll-Slot-MainHand","B",1},
   {17,"Off Hand","Interface\\PaperDoll\\UI-PaperDoll-Slot-SecondaryHand","B",2},
   {18,"Ranged","Interface\\PaperDoll\\UI-PaperDoll-Slot-Ranged","B",3},
@@ -430,3 +430,47 @@ end
 function CapyMorphUI_Toggle()
   if f:IsShown() then f:Hide() else f:Show(); UI.setTab("armory") end  -- always open on Armory
 end
+
+----------------------------------------------------------------------
+-- minimap button (self-contained, no external libs). Click opens the window;
+-- drag moves it around the minimap edge; the angle is saved per character.
+local mmb = CreateFrame("Button", "CapyMorphMinimapButton", Minimap)
+mmb:SetWidth(31); mmb:SetHeight(31)
+mmb:SetFrameStrata("MEDIUM"); mmb:SetFrameLevel(8)
+mmb:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+mmb:RegisterForDrag("LeftButton")
+
+local mmIcon = mmb:CreateTexture(nil, "BACKGROUND")
+mmIcon:SetWidth(20); mmIcon:SetHeight(20)
+mmIcon:SetTexture("Interface\\Icons\\Spell_Nature_Polymorph")
+mmIcon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+mmIcon:SetPoint("CENTER", mmb, "CENTER", 0, 1)
+
+local mmBorder = mmb:CreateTexture(nil, "OVERLAY")
+mmBorder:SetWidth(53); mmBorder:SetHeight(53)
+mmBorder:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+mmBorder:SetPoint("TOPLEFT", mmb, "TOPLEFT", 0, 0)
+
+local function mmPos(angle)
+  local a = math.rad(angle or 200)
+  mmb:ClearAllPoints()
+  mmb:SetPoint("CENTER", Minimap, "CENTER", 80*math.cos(a), 80*math.sin(a))
+end
+local function mmDrag()
+  local mx, my = Minimap:GetCenter()
+  local scale = Minimap:GetEffectiveScale()
+  local cx, cy = GetCursorPosition()
+  cx = cx/scale; cy = cy/scale
+  local angle = math.deg(math.atan2(cy - my, cx - mx))
+  TMC.db().minimapAngle = angle
+  mmPos(angle)
+end
+mmb:SetScript("OnClick", function() if CapyMorphUI_Toggle then CapyMorphUI_Toggle() end end)
+mmb:SetScript("OnDragStart", function() mmb:SetScript("OnUpdate", mmDrag) end)
+mmb:SetScript("OnDragStop", function() mmb:SetScript("OnUpdate", nil) end)
+mmb:SetScript("OnEnter", function()
+  GameTooltip:SetOwner(mmb, "ANCHOR_LEFT"); GameTooltip:SetText("CapyMorph")
+  GameTooltip:AddLine("Left-click: open    Drag: move", 1, 1, 1); GameTooltip:Show()
+end)
+mmb:SetScript("OnLeave", function() GameTooltip:Hide() end)
+mmPos((TMC.db() and TMC.db().minimapAngle) or 200)

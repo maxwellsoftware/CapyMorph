@@ -42,14 +42,24 @@ ADDON_DIR = os.path.join(ADDONS_DIR, ADDON_NAME)
 CONFIG_PATH = os.path.join(cfg.DATA_DIR, "char_morph.json")
 DATA_GLOBAL = "CapyMorphData"
 
-# inventory_type (item_template) -> equipment inventory slot (for SetUnitVisibleItemID)
-INVTYPE_TO_SLOT = {
-    1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 20: 5, 6: 6, 7: 7, 8: 8, 9: 9, 10: 10,
-    11: 11, 12: 13, 16: 15, 19: 19,
-    13: 16, 21: 16, 17: 16,        # weapons -> main hand
-    22: 17, 14: 17, 23: 17,        # off hand / shield / held
-    15: 18, 26: 18, 25: 18,        # ranged
+# inventory_type (item_template) -> equipment slot(s) a look can be shown in.
+# A one-hand weapon (13) can go in EITHER hand, so e.g. warriors can transmog
+# their off-hand weapon to a sword. 2H (17) and main-hand-only (21) stay MH.
+INVTYPE_TO_SLOTS = {
+    1: [1], 2: [2], 3: [3], 4: [4], 5: [5], 20: [5], 6: [6], 7: [7], 8: [8],
+    9: [9], 10: [10], 11: [11], 12: [13], 16: [15], 19: [19],
+    13: [16, 17], 21: [16], 17: [16],   # 1H weapon -> main OR off hand; mainhand-only / 2H -> main
+    22: [17], 14: [17], 23: [17],       # off-hand weapon / shield / held -> off hand
+    15: [18], 26: [18], 25: [18],       # ranged / wand / thrown
 }
+
+
+def slots_for(invtype):
+    return INVTYPE_TO_SLOTS.get(invtype, [])
+
+
+# primary slot (where a single slot is needed, e.g. the desktop apply)
+INVTYPE_TO_SLOT = {k: v[0] for k, v in INVTYPE_TO_SLOTS.items()}
 
 _TOC = """## Interface: 11200
 ## Title: CapyMorph

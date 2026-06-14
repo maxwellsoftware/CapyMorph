@@ -423,11 +423,10 @@ class MainWindow(QtWidgets.QMainWindow):
             for e in weapon_db.entries:
                 if not e.item_id or not e.slot:
                     continue
-                inv = tm_char.INVTYPE_TO_SLOT.get(e.slot)
-                if not inv:
-                    continue
                 nm = (e.item_name.split(";")[0] if e.item_name else e.name) or e.name
-                if nm:
+                if not nm:
+                    continue
+                for inv in tm_char.slots_for(e.slot):   # 1H weapons -> both hands
                     items_by_slot.setdefault(inv, []).append((nm, e.item_id))
             for inv in items_by_slot:
                 seen, out = set(), []

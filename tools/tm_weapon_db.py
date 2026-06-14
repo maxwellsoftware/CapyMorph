@@ -119,7 +119,7 @@ def client_signature() -> dict:
     Compared by archive name + size (NOT path), so an identical client on a
     friend's PC reuses the prebuilt DB, while a different/updated client triggers
     a rebuild. Makes the .exe drop-in standalone on any 1.18 client."""
-    from stage2_dbc_explorer import find_effective_archive
+    from tm_archive import find_effective_archive
     internal = cfg.TARGET_DBCS["ItemDisplayInfo"]
     try:
         arc = find_effective_archive(internal)
@@ -131,7 +131,7 @@ def client_signature() -> dict:
 def build_and_save(dbc: Optional[tm_dbc.DBC] = None) -> dict:
     cfg.ensure_dirs()
     if dbc is None:
-        from stage2_dbc_explorer import find_effective_archive
+        from tm_archive import find_effective_archive
         internal = cfg.TARGET_DBCS["ItemDisplayInfo"]
         arc = find_effective_archive(internal)
         dbc = tm_dbc.load_dbc_from_mpq(arc, internal, "ItemDisplayInfo")
