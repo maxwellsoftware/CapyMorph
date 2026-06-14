@@ -21,6 +21,7 @@ local function ensureDB()
   if not db.forms then db.forms={} end
   if not db.presets then db.presets={} end
   if not db.hidden then db.hidden={} end
+  if not db.mounts then db.mounts={} end
   -- migrate old hidden sentinel (items[slot]==0) -> separate db.hidden, keeping transmog
   local mh
   local s,v for s,v in pairs(db.items) do if v == 0 then mh = mh or {}; mh[s] = true end end
@@ -319,6 +320,21 @@ end
 
 function TMC.setOn(v) local db=ensureDB(); db.on=v; if v then apply() else visualReset() end end
 
+-- sync: serialize my visible look so other CapyMorph users can render it locally.
+-- format:  I<slot>,<item>;<slot>,<item>;...|M<displayID>   (hidden slots -> item 0)
+function TMC.syncSerialize()
+  local db = ensureDB()
+  local merged = {}
+  local s, i
+  for s, i in pairs(db.items or {}) do merged[s] = i end
+  if db.hidden then local h for h in pairs(db.hidden) do merged[h] = 0 end end
+  local ip = {}
+  for s, i in pairs(merged) do table.insert(ip, s .. "," .. i) end
+  local out = "I" .. table.concat(ip, ";")
+  if db.on and db.model then out = out .. "|M" .. db.model end
+  return out
+end
+
 -- presets: full snapshot of model/items/formmap/unform
 local function copylabels(l)
   if not l then return {} end
@@ -349,6 +365,31 @@ function TMC.presetNames()
   for k in pairs(db.presets) do table.insert(t, k) end; table.sort(t); return t
 end
 
+-- mount morph: remap a mount's display id to another model (client-local,
+-- per its display). db.mounts = { [mountDisplay] = {to, name, toName} }.
+function TMC.setMount(mountDisplay, toDisplay, mountName, toName)
+  local db = ensureDB(); if not db.mounts then db.mounts = {} end
+  db.mounts[mountDisplay] = { to = toDisplay, name = mountName, toName = toName }
+  -- Only the global remap is safe. It needs the mount's REAL client display id as
+  -- the key; SetUnitMountDisplayID("player", ...) desyncs the player and is not used.
+  if RemapMountDisplayID and mountDisplay and mountDisplay > 0 then RemapMountDisplayID(mountDisplay, toDisplay) end
+end
+function TMC.resetMount(mountDisplay)
+  local db = ensureDB()
+  if db.mounts then db.mounts[mountDisplay] = nil end
+  if RemapMountDisplayID then RemapMountDisplayID(mountDisplay, mountDisplay) end  -- identity -> original model
+end
+function TMC.mountMorph(mountDisplay)  -- returns the stored override entry, or nil
+  local db = ensureDB(); return db.mounts and db.mounts[mountDisplay]
+end
+local function applyMounts()
+  local db = ensureDB()
+  if not RemapMountDisplayID or not db.mounts then return end
+  local k, v
+  for k, v in pairs(db.mounts) do if v and v.to then RemapMountDisplayID(k, v.to) end end
+end
+TMC.applyMounts = applyMounts
+
 local function diag()
   msg("SetUnitDisplayID="..type(SetUnitDisplayID)..", UnitDisplayInfo="..type(UnitDisplayInfo)..", GetShapeshiftForm="..type(GetShapeshiftForm)..", GetShapeshiftFormInfo="..type(GetShapeshiftFormInfo))
   if type(UnitDisplayInfo)=="function" then msg("current display = "..tostring(UnitDisplayInfo("player"))) end
@@ -368,6 +409,64 @@ local function diag()
 end
 TMC.diag = diag
 
+-- mount diagnostic: TurtleWoW keeps mounts (and pets) as spells in a hidden
+-- "ZCompanions" spellbook tab. Dump it + check the mount API.
+local function mountdiag()
+  msg("SetUnitMountDisplayID="..type(SetUnitMountDisplayID)..", RemapMountDisplayID="..type(RemapMountDisplayID)..", GetSpellTabInfo="..type(GetSpellTabInfo))
+  local nt = GetNumSpellTabs and GetNumSpellTabs() or 0
+  msg("spell tabs = "..tostring(nt))
+  local i
+  for i=1, nt do
+    local name, tex, off, num = GetSpellTabInfo(i)
+    msg("  tab "..i..": '"..tostring(name).."' off="..tostring(off).." num="..tostring(num))
+    if name and (string.find(string.lower(name), "mount", 1, true) or string.find(string.lower(name), "companion", 1, true)) then
+      local s
+      for s = (off or 0)+1, (off or 0)+(num or 0) do
+        local sp, rk = GetSpellName(s, BOOKTYPE_SPELL)
+        local link = GetSpellLink and GetSpellLink(s, BOOKTYPE_SPELL)
+        msg("    ["..s.."] "..tostring(sp)..((rk and rk ~= "") and (" |cff888888"..rk.."|r") or "")..(link and ("  "..link) or ""))
+      end
+    end
+  end
+end
+TMC.mountdiag = mountdiag
+
+-- runtime mount probe: read the REAL current mount display, optionally set it.
+-- run while mounted:  /cm mtest        -> prints current displays
+--                     /cm mtest 7322   -> sets player mount display to 7322
+-- SAFE probe: read-only. Does NOT call SetUnitMountDisplayID (the no-arg form
+-- clears the mount and desyncs the player; the 2-arg form on "player" also breaks).
+local function mtest()
+  msg("--- mtest (read-only) ---")
+  if UnitDisplayInfo then msg("UnitDisplayInfo(player) = "..tostring(UnitDisplayInfo("player")).." (this is your CHARACTER, not the mount)") end
+  msg("RemapMountDisplayID="..type(RemapMountDisplayID)..", SetUnitMountDisplayID="..type(SetUnitMountDisplayID))
+end
+TMC.mtest = mtest
+
+-- VALIDATION TEST: remap every known turtle/tortoise display to a target model
+-- (default chicken=304). Run while NOT mounted, then mount a turtle mount.
+--   /cm tturtle        -> turtles become chickens
+--   /cm tturtle 6080   -> turtles become display 6080
+--   /cm tturtleoff     -> undo (remap each back to itself)
+-- DEFINITIVE function test: remap EVERY valid display (4..21697) to a target.
+-- The custom turtle's display is a valid CreatureDisplayInfo id in this range, so
+-- if RemapMountDisplayID works at all, the turtle becomes the target after mounting.
+local DISP_MAX = 21697
+local function tall(arg)
+  if not RemapMountDisplayID then msg("|cffff5555RemapMountDisplayID missing|r"); return end
+  local d
+  if arg == "off" then
+    for d=4, DISP_MAX do RemapMountDisplayID(d) end   -- no 2nd arg = clear that remap
+    msg("full remap cleared"); return
+  end
+  local target = tonumber(arg) or 304
+  -- faction displays are passed as separate varargs (one per faction), not a table
+  -- and not a single number; pass several so it hits the player's faction.
+  for d=4, DISP_MAX do RemapMountDisplayID(d, target, target, target, target) end
+  msg("vararg remap ALL displays -> "..target..". Dismount and remount now.")
+end
+TMC.tall = tall
+
 -- events
 local announced = false
 local burst = nil          -- short per-frame window after a shapeshift (forward-declared)
@@ -385,7 +484,7 @@ f:SetScript("OnEvent", function()
       msg("ready. /cm opens the window.")
     end
   end
-  if event == "PLAYER_ENTERING_WORLD" then lastVis = {}; ovDisp = nil end  -- overrides reset on zone -> force one re-apply
+  if event == "PLAYER_ENTERING_WORLD" then lastVis = {}; ovDisp = nil; applyMounts() end  -- overrides reset on zone -> re-apply
   refreshForm(0)
   apply()                    -- re-assert visible items after the event
   burst = 0.5                -- briefly poll per-frame so isActive confirms quickly after a shift
@@ -425,7 +524,12 @@ SlashCmdList["CAPYMORPH"] = function(m)
   elseif cmd == "clear" then TMC.clear(); msg("cleared")
   elseif cmd == "off" then TMC.setOn(false); msg("off")
   elseif cmd == "on" then TMC.setOn(true); msg("on")
+  elseif cmd == "sync" then if TMC.syncSet then TMC.syncSet(a[2] ~= "off") else msg("sync module not loaded") end
   elseif cmd == "diag" then diag()
+  elseif cmd == "mountdiag" then mountdiag()
+  elseif cmd == "mtest" then mtest()
+  elseif cmd == "tall" then tall(a[2])
+  elseif cmd == "talloff" then tall("off")
   elseif cmd == "test" then
     local id = tonumber(a[2]) or 7550
     if type(SetUnitDisplayID)=="function" then SetUnitDisplayID("player", id); msg("called SetUnitDisplayID(player,"..id..") — did your model change? (if you are shapeshifted, did the FORM change?)")

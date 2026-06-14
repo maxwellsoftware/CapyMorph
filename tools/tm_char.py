@@ -63,11 +63,12 @@ INVTYPE_TO_SLOT = {k: v[0] for k, v in INVTYPE_TO_SLOTS.items()}
 
 _TOC = """## Interface: 11200
 ## Title: CapyMorph
-## Version: 1.0.0
+## Version: 1.0.2
 ## Notes: Locally morphs your own character (VanillaHelpers) — in-game UI + /cm
 ## SavedVariablesPerCharacter: CapyMorphDB
 CapyMorphData.lua
 CapyMorph.lua
+CapyMorphSync.lua
 CapyMorphUI.lua
 """
 
@@ -150,19 +151,21 @@ def write_addon(config: dict) -> str:
     return ADDON_DIR
 
 
-def write_data(items_by_slot: dict, creatures: list) -> str:
+def write_data(items_by_slot: dict, creatures: list, mounts: dict = None) -> str:
     """
     Generate CapyMorphData.lua for the in-game UI search lists.
       items_by_slot: { inventorySlot(int): [(name, itemID), ...] }
       creatures:     [ (name, displayID, modelPath), ... ]
+      mounts:        { mount spell name: mount displayID }  (for the Mounts tab)
     """
     os.makedirs(ADDON_DIR, exist_ok=True)
 
     def esc(s):
         return str(s).replace("\\", "\\\\").replace('"', '\\"')
 
-    lines = [DATA_GLOBAL + " = { items = {}, creatures = {} }",
-             "local I = " + DATA_GLOBAL + ".items", "local C = " + DATA_GLOBAL + ".creatures"]
+    lines = [DATA_GLOBAL + " = { items = {}, creatures = {}, mounts = {} }",
+             "local I = " + DATA_GLOBAL + ".items", "local C = " + DATA_GLOBAL + ".creatures",
+             "local M = " + DATA_GLOBAL + ".mounts"]
     for slot in sorted(items_by_slot):
         entries = items_by_slot[slot]
         lines.append(f"I[{slot}] = {{")
@@ -172,6 +175,8 @@ def write_data(items_by_slot: dict, creatures: list) -> str:
     lines.append("local n = 0")
     for name, did, path in creatures:
         lines.append(f'n=n+1; C[n]={{"{esc(name)}",{did},"{esc(path)}"}}')
+    for name, did in sorted((mounts or {}).items()):
+        lines.append(f'M["{esc(name)}"]={did}')
     data = "\n".join(lines) + "\n"
     with open(os.path.join(ADDON_DIR, ADDON_NAME + "Data.lua"), "w", encoding="utf-8") as f:
         f.write(data)

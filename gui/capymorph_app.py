@@ -436,7 +436,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 items_by_slot[inv] = out[:2000]
             creatures = [(e.name, e.display_id, e.model_path)
                          for e in creature_db.entries if e.model_path][:14000]
-            tm_char.write_data(items_by_slot, creatures)
+            import tm_mounts
+            mounts = tm_mounts.build_mounts()      # Companions-tab mounts: name -> display
+            tm_char.write_data(items_by_slot, creatures, mounts)
         tm_char.write_addon(self.charcfg)  # always refresh UI/logic (small, fast)
 
 

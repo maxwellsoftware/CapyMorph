@@ -52,7 +52,7 @@ close:SetPoint("TOPRIGHT", -8, -8)
 
 -- tabs (centered on the window, order: Armory / Character / Druid / Presets)
 local tabBtns = {}
-local TABDEF = {{"Armory","armory"},{"My Character","character"},{"Druid Forms","druid"},{"Presets","presets"}}
+local TABDEF = {{"Armory","armory"},{"My Character","character"},{"Druid Forms","druid"},{"Mounts","mounts"},{"Presets","presets"}}
 local TW, TGAP = 120, 8
 local ntab = table.getn(TABDEF)
 local totalw = ntab*TW + (ntab-1)*TGAP
@@ -68,6 +68,13 @@ end
 
 local MODEL_X, MODEL_Y, MODEL_W, MODEL_H = 70, -118, 250, H-244
 local PICK_X = MODEL_X + MODEL_W + 10 + 40 + 30  -- right of the right-hand slot column + gap = 400
+local MROWS = ROWS                               -- Mounts tab: full-height "your mounts" list
+-- Mounts tab 3-column layout: [ your mounts | full preview | narrow search ]
+local ML_X, ML_W = 16, 168                       -- left column: mounts list
+local MP_W = 190                                 -- right column: narrow search/database (~2.3x narrower)
+local MP_X = W - MP_W - 24                        -- right column left edge
+local MC_X = ML_X + ML_W + 24                     -- centre preview x
+local MC_W = math.max(220, MP_X - MC_X - 28)      -- centre preview width (fills the gap)
 
 ----------------------------------------------------------------------
 -- character / preview model — DOUBLE-BUFFERED.
@@ -314,10 +321,34 @@ resetBtn:SetText("Remove this morph")
 resetBtn:SetScript("OnClick", function()
   UI.selected=nil; pickName:SetText("")
   if UI.tab=="character" then TMC.clearBody(); showCurrent(); TMC.msg("character morph removed")
-  elseif UI.tab=="druid" then TMC.setForm(UI.form,"off"); UI.refreshForms(); showCurrent(); TMC.msg(UI.form.." reset to normal") end
+  elseif UI.tab=="druid" then TMC.setForm(UI.form,"off"); UI.refreshForms(); showCurrent(); TMC.msg(UI.form.." reset to normal")
+  elseif UI.tab=="mounts" then
+    if UI.mount then TMC.resetMount(UI.mount.display); previewCreature(nil, UI.mount.display); UI.mountUpdate(); TMC.msg(UI.mount.name.." restored to its original model")
+    else TMC.msg("pick one of your mounts on the left first") end
+  end
   UI.update()
 end)
 resetBtn:Hide()
+
+----------------------------------------------------------------------
+-- Mounts tab — left column: "your mounts" list (scanned from the Companions/
+-- mounts spellbook tab, matched to CapyMorphData.mounts). Full height, left side.
+local mLabel = f:CreateFontString(nil,"OVERLAY","GameFontNormal")
+mLabel:SetPoint("TOPLEFT", ML_X, MODEL_Y-6); mLabel:SetText("Your mounts:"); mLabel:Hide()
+local mScroll = CreateFrame("ScrollFrame", "CapyMorphMScroll", f, "FauxScrollFrameTemplate")
+mScroll:SetWidth(ML_W); mScroll:SetHeight(MROWS*ROWH)
+mScroll:SetPoint("TOPLEFT", ML_X, MODEL_Y-32)
+mScroll:SetScript("OnVerticalScroll", function() FauxScrollFrame_OnVerticalScroll(ROWH, UI.mountUpdate) end)
+local mRows = {}
+for i=1, MROWS do
+  local b = CreateFrame("Button", nil, f)
+  b:SetWidth(ML_W-12); b:SetHeight(ROWH); b:SetPoint("TOPLEFT", mScroll, "TOPLEFT", 0, -((i-1)*ROWH))
+  local fs=b:CreateFontString(nil,"OVERLAY","GameFontHighlightSmall"); fs:SetPoint("LEFT",2,0); fs:SetJustifyH("LEFT"); b.fs=fs
+  local hl=b:CreateTexture(nil,"BACKGROUND"); hl:SetAllPoints(b); hl:SetTexture(0.3,0.5,0.9,0.4); hl:Hide(); b.hl=hl
+  b:SetScript("OnClick", function() UI.selectMount(b.mIndex) end)
+  mRows[i]=b; b:Hide()
+end
+mScroll:Hide()
 
 ----------------------------------------------------------------------
 -- bottom-left: name input + Save (saves the CURRENT look as a preset).
@@ -407,7 +438,57 @@ function UI.apply()
     if cur == UI.form then TMC.msg(UI.form.." = "..e[1]..": applied now (you are in "..cur..")")
     else TMC.msg(UI.form.." = "..e[1]..". |cffff8800detect: "..TMC.formDebug().."|r") end
   elseif UI.tab=="presets" then TMC.loadPreset(e[1]); TMC.previewClear(); UI.refreshSlots(); TMC.msg("loaded preset "..e[1])
+  elseif UI.tab=="mounts" then
+    if not UI.mount then TMC.msg("pick one of your mounts on the left first"); return end
+    TMC.setMount(UI.mount.display, e[2], UI.mount.name, e[1]); UI.mountUpdate(); TMC.msg(UI.mount.name.." -> "..e[1])
   else TMC.setBody(e[2], e[1], e[3]); showCurrent(); TMC.msg("you are now: "..e[1]) end
+end
+
+-- Mounts tab: scan the Companions spellbook tab and keep the ones we recognise.
+function UI.scanMounts()
+  UI.playerMounts = {}
+  local md = CapyMorphData and CapyMorphData.mounts
+  if not md then return end
+  local nt = (GetNumSpellTabs and GetNumSpellTabs()) or 0
+  local ti
+  for ti=1, nt do
+    local name, _, off, num = GetSpellTabInfo(ti)
+    local lname = string.lower(name or "")
+    if name and (string.find(lname, "mount", 1, true) or string.find(lname, "companion", 1, true)) then
+      local s
+      for s=(off or 0)+1, (off or 0)+(num or 0) do
+        local sp = GetSpellName(s, BOOKTYPE_SPELL)
+        if sp and md[sp] then table.insert(UI.playerMounts, {sp, md[sp]}) end
+      end
+    end
+  end
+  table.sort(UI.playerMounts, function(a,b) return a[1] < b[1] end)
+end
+
+function UI.mountUpdate()
+  local n = table.getn(UI.playerMounts or {})
+  FauxScrollFrame_Update(mScroll, n, MROWS, ROWH)
+  local off = FauxScrollFrame_GetOffset(mScroll)
+  local i
+  for i=1, MROWS do
+    local idx=off+i; local b=mRows[i]
+    if idx<=n then
+      local e=UI.playerMounts[idx]; b.mIndex=idx
+      local ov = TMC.mountMorph(e[2])
+      b.fs:SetText(e[1]..((ov and ov.toName) and (" |cff66cc66> "..ov.toName.."|r") or ""))
+      if UI.mount and UI.mount.display==e[2] then b.hl:Show() else b.hl:Hide() end
+      b:Show()
+    else b:Hide() end
+  end
+end
+
+function UI.selectMount(idx)
+  local e = UI.playerMounts and UI.playerMounts[idx]; if not e then return end
+  UI.mount = {name=e[1], display=e[2]}; UI.selected=nil
+  pickName:SetText("morph |cffffd100"..e[1].."|r into...")
+  local ov = TMC.mountMorph(e[2])
+  previewCreature(nil, (ov and ov.to) or e[2])   -- show its current (or already-overridden) model
+  UI.mountUpdate(); UI.update()
 end
 
 function UI.setTab(key)
@@ -418,17 +499,73 @@ function UI.setTab(key)
   local druid = (key=="druid")
   local fk,fb for fk,fb in pairs(formBtns) do if druid then fb:Show() else fb:Hide() end end
   if druid then selfBtn:Show(); formStatus:Show(); UI.refreshForms() else selfBtn:Hide(); formStatus:Hide() end
-  if key=="character" or druid then resetBtn:Show(); resetBtn:SetText(druid and "Reset this form" or "Remove this morph") else resetBtn:Hide() end
+  local mounts = (key=="mounts")
+  -- Mounts tab = 3 columns: [ your mounts | full preview | narrow search ].
+  -- Re-anchor the shared preview + picker for this tab, restore them otherwise.
+  modelA:ClearAllPoints(); modelB:ClearAllPoints()
+  search:ClearAllPoints(); scroll:ClearAllPoints()
+  local mi
+  if mounts then
+    modelA:SetWidth(MC_W); modelA:SetHeight(MODEL_H); modelA:SetPoint("TOPLEFT", MC_X, MODEL_Y)
+    modelB:SetWidth(MC_W); modelB:SetHeight(MODEL_H); modelB:SetPoint("TOPLEFT", MC_X, MODEL_Y)
+    search:SetWidth(MP_W-46); search:SetPoint("TOPLEFT", MP_X+46, MODEL_Y)
+    scroll:SetWidth(MP_W); scroll:SetPoint("TOPLEFT", MP_X, MODEL_Y-32)
+    for mi=1,ROWS do rows[mi]:SetWidth(MP_W-12) end
+    mLabel:Show(); mScroll:Show(); UI.mount=nil; UI.scanMounts(); UI.mountUpdate()
+  else
+    modelA:SetWidth(MODEL_W); modelA:SetHeight(MODEL_H); modelA:SetPoint("TOPLEFT", MODEL_X, MODEL_Y)
+    modelB:SetWidth(MODEL_W); modelB:SetHeight(MODEL_H); modelB:SetPoint("TOPLEFT", MODEL_X, MODEL_Y)
+    search:SetWidth(W-PICK_X-130); search:SetPoint("TOPLEFT", PICK_X+50, MODEL_Y)
+    scroll:SetWidth(W-PICK_X-60); scroll:SetPoint("TOPLEFT", PICK_X, MODEL_Y-32)
+    for mi=1,ROWS do rows[mi]:SetWidth(W-PICK_X-72) end
+    mLabel:Hide(); mScroll:Hide(); for mi=1,MROWS do mRows[mi]:Hide() end
+  end
+  resetBtn:ClearAllPoints()
+  if key=="character" or druid then
+    resetBtn:SetWidth(MODEL_W); resetBtn:SetPoint("TOPLEFT", MODEL_X, MODEL_Y - MODEL_H - 14)
+    resetBtn:Show(); resetBtn:SetText(druid and "Reset this form" or "Remove this morph")
+  elseif mounts then
+    resetBtn:SetWidth(MC_W); resetBtn:SetPoint("TOPLEFT", MC_X, MODEL_Y - MODEL_H - 14)
+    resetBtn:Show(); resetBtn:SetText("Restore original model")
+  else resetBtn:Hide() end
   if key=="presets" then delBtn:Show() else delBtn:Hide() end
-  search:SetText(""); UI.selected=nil; pickName:SetText("")
+  pickName:ClearAllPoints()
+  if mounts then pickName:SetPoint("BOTTOMLEFT", MC_X, 56); pickName:SetWidth(MC_W)
+  else pickName:SetPoint("BOTTOMLEFT", PICK_X, 56); pickName:SetWidth(W-PICK_X-200) end
+  search:SetText(""); UI.selected=nil
+  if mounts then pickName:SetText("pick a mount on the left") else pickName:SetText("") end
   applyBtn:SetText(key=="presets" and "Load preset" or "Apply")
   UI.rebuild()
   if armory then UI.refreshSlots(); UI.selectSlot(UI.slot or 16)
+  elseif mounts then previewCreature(nil, nil)
   else showCurrent() end
 end
 
+----------------------------------------------------------------------
+-- resize grip (bottom-right): uniform SCALE, so all proportions are preserved.
+-- Drag right/left to grow/shrink; the scale is saved per character.
+local MIN_SCALE, MAX_SCALE = 0.7, 2.0
+local grip = CreateFrame("Button", nil, f)
+grip:SetWidth(18); grip:SetHeight(18); grip:SetPoint("BOTTOMRIGHT", -3, 3)
+grip:SetFrameLevel(f:GetFrameLevel() + 20)
+grip:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
+grip:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
+grip:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
+grip:SetScript("OnMouseDown", function() grip.drag = true; grip.cx = GetCursorPosition(); grip.s0 = f:GetScale() end)
+grip:SetScript("OnMouseUp", function() grip.drag = false; if CapyMorphDB then CapyMorphDB.uiScale = f:GetScale() end end)
+grip:SetScript("OnUpdate", function()
+  if not grip.drag then return end
+  local x = GetCursorPosition()
+  local sc = grip.s0 + (x - grip.cx) * 0.0015
+  if sc < MIN_SCALE then sc = MIN_SCALE elseif sc > MAX_SCALE then sc = MAX_SCALE end
+  f:SetScale(sc)
+end)
+
 function CapyMorphUI_Toggle()
-  if f:IsShown() then f:Hide() else f:Show(); UI.setTab("armory") end  -- always open on Armory
+  if f:IsShown() then f:Hide() else
+    if CapyMorphDB and CapyMorphDB.uiScale then f:SetScale(CapyMorphDB.uiScale) end  -- restore saved size
+    f:Show(); UI.setTab("armory")   -- always open on Armory
+  end
 end
 
 ----------------------------------------------------------------------
